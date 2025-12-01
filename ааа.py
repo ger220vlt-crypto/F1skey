@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS complaints (
 conn.commit()
 
 # Токен и ID администратора
-BOT_TOKEN = "7908310242:AAH8W0L5Fj8jHfCwJLk6o4XHc9bM3d7k8B0"
-ADMIN_ID = 123456789  # ЗАМЕНИТЕ НА ВАШ ID
+BOT_TOKEN = "8463911717:AAGXqlEqfUYHfGeV4ZeE2SYI3WlewsiKJpo"
+ADMIN_ID = 7200109509  # ЗАМЕНИТЕ НА ВАШ ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
 user_data = {}
@@ -284,3 +284,4 @@ if __name__ == "__main__":
         print(f"❌ Ошибка базы данных: {e}")
     
     bot.polling(none_stop=True)
+
