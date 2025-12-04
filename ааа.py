@@ -5,8 +5,14 @@ from telebot import types
 import datetime
 
 # ===== НАСТРОЙКИ =====
-BOT_TOKEN = "8463911717:AAGXqlEqfUYHfGeV4ZeE2SYI3WlewsiKJpo"  # Замените на токен от @BotFather
-ADMIN_ID = 7200109509  # Замените на ваш ID
+BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"  # Замените на токен от @BotFather
+
+# ===== СПИСОК АДМИНИСТРАТОРОВ =====
+ADMIN_IDS = [
+    7200109509,
+    1232171882,    # ID первого админа
+    523416060,    # ID второго админа
+]
 
 # ===== БАЗА ДАННЫХ =====
 os.makedirs('db', exist_ok=True)
@@ -23,6 +29,7 @@ CREATE TABLE IF NOT EXISTS complaints (
     status TEXT DEFAULT 'pending',
     admin_id INTEGER,
     admin_username TEXT,
+    admin_comment TEXT DEFAULT '',
     decision_time TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
@@ -33,11 +40,27 @@ conn.commit()
 bot = telebot.TeleBot(BOT_TOKEN)
 user_states = {}
 
+# ===== ФУНКЦИИ =====
+
+def is_admin(user_id):
+    """Проверяет, является ли пользователь администратором"""
+    return user_id in ADMIN_IDS
+
+def send_to_all_admins(text, markup=None):
+    """Отправляет сообщение всем администраторам"""
+    for admin_id in ADMIN_IDS:
+        try:
+            if markup:
+                bot.send_message(admin_id, text, reply_markup=markup)
+            else:
+                bot.send_message(admin_id, text)
+        except Exception as e:
+            print(f"⚠️ Не удалось отправить сообщение админу {admin_id}: {e}")
+
 # ===== ОСНОВНЫЕ ФУНКЦИИ =====
 
 @bot.message_handler(commands=['start'])
 def start_command(message):
-    """Обработка команды /start"""
     user_states[message.chat.id] = {'state': None}
     
     markup = types.InlineKeyboardMarkup()
@@ -45,6 +68,10 @@ def start_command(message):
     my_complaints_btn = types.InlineKeyboardButton("📋 МОИ ЖАЛОБЫ", callback_data="my_complaints")
     markup.add(new_complaint_btn)
     markup.add(my_complaints_btn)
+    
+    if is_admin(message.from_user.id):
+        admin_btn = types.InlineKeyboardButton("👮 АДМИН ПАНЕЛЬ", callback_data="admin_panel")
+        markup.add(admin_btn)
     
     text = """
 🔔 БОТ ДЛЯ ПРИЕМА ЖАЛОБ
@@ -58,7 +85,6 @@ def start_command(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "new_complaint")
 def start_new_complaint(call):
-    """Начало написания новой жалобы"""
     user_states[call.message.chat.id] = {'state': 'waiting_complaint'}
     
     bot.edit_message_text(
@@ -79,20 +105,14 @@ def start_new_complaint(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_complaint")
 def cancel_complaint(call):
-    """Отмена написания жалобы"""
     if call.message.chat.id in user_states:
         user_states[call.message.chat.id] = {'state': None}
     
-    bot.edit_message_text(
-        "❌ Написание жалобы отменено",
-        call.message.chat.id,
-        call.message.message_id
-    )
+    bot.edit_message_text("❌ Написание жалобы отменено", call.message.chat.id, call.message.message_id)
     start_command(call.message)
 
 @bot.message_handler(func=lambda message: user_states.get(message.chat.id, {}).get('state') == 'waiting_complaint')
 def save_complaint(message):
-    """Сохранение жалобы в базу"""
     complaint_text = message.text.strip()
     
     if len(complaint_text) < 20:
@@ -133,15 +153,15 @@ def save_complaint(message):
 """
         bot.send_message(message.chat.id, confirm_text, reply_markup=user_markup)
         
-        send_to_admin(complaint_id, message.from_user, complaint_text)
+        send_complaint_to_admin(complaint_id, message.from_user, complaint_text)
         user_states[message.chat.id] = {'state': None}
         
     except Exception as e:
         bot.send_message(message.chat.id, "❌ Ошибка при сохранении жалобы")
         print(f"Database error: {e}")
 
-def send_to_admin(complaint_id, user, complaint_text):
-    """Отправка жалобы администратору с кнопками"""
+def send_complaint_to_admin(complaint_id, user, complaint_text):
+    """Отправляет жалобу администраторам - сообщение НЕ изменяется после решения"""
     admin_text = f"""
 🚨 НОВАЯ ЖАЛОБА #{complaint_id}
 
@@ -152,24 +172,39 @@ def send_to_admin(complaint_id, user, complaint_text):
 
 📝 ТЕКСТ ЖАЛОБЫ:
 {complaint_text}
+
+⚡ Статус: ⏳ ОЖИДАЕТ РЕШЕНИЯ
 """
     
+    # Кнопки для администратора
     markup = types.InlineKeyboardMarkup(row_width=2)
     approve_btn = types.InlineKeyboardButton("✅ ОДОБРИТЬ", callback_data=f"approve_{complaint_id}")
     reject_btn = types.InlineKeyboardButton("❌ ОТКЛОНИТЬ", callback_data=f"reject_{complaint_id}")
     markup.add(approve_btn, reject_btn)
     
-    try:
-        bot.send_message(ADMIN_ID, admin_text, reply_markup=markup)
-    except Exception as e:
-        print(f"Error sending to admin: {e}")
+    # Отправляем всем администраторам
+    send_to_all_admins(admin_text, markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'reject_')))
-def handle_decision(call):
+def handle_admin_decision(call):
     """Обработка решения администратора"""
     complaint_id = int(call.data.split('_')[1])
     action = 'approve' if call.data.startswith('approve_') else 'reject'
     
+    # Получаем информацию о жалобе до обновления
+    cursor.execute('''
+    SELECT user_id, username, first_name, complaint_text, created_at 
+    FROM complaints WHERE id = ?
+    ''', (complaint_id,))
+    complaint = cursor.fetchone()
+    
+    if not complaint:
+        bot.answer_callback_query(call.id, "❌ Жалоба не найдена")
+        return
+    
+    user_id, username, first_name, complaint_text, created_at = complaint
+    
+    # Обновляем статус в базе
     cursor.execute('''
     UPDATE complaints 
     SET status = ?, 
@@ -180,60 +215,133 @@ def handle_decision(call):
     ''', (
         'approved' if action == 'approve' else 'rejected',
         call.from_user.id,
-        call.from_user.username,
+        call.from_user.username or call.from_user.first_name,
         complaint_id
     ))
     conn.commit()
     
-    cursor.execute('SELECT user_id FROM complaints WHERE id = ?', (complaint_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        user_id = result[0]
-        
-        if action == 'approve':
-            decision_text = f"""
+    # Уведомляем пользователя
+    if action == 'approve':
+        decision_text = f"""
 ✅ ЖАЛОБА ОДОБРЕНА
 
 📄 Номер жалобы: #{complaint_id}
 📅 Дата решения: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}
+👮 Администратор: @{call.from_user.username or call.from_user.first_name}
 
 🎉 Ваша жалоба принята к рассмотрению и будет решена в ближайшее время.
+
+📝 Ваш текст жалобы:
+{complaint_text[:500]}
 """
-        else:
-            decision_text = f"""
+    else:
+        decision_text = f"""
 ❌ ЖАЛОБА ОТКЛОНЕНА
 
 📄 Номер жалобы: #{complaint_id}
 📅 Дата решения: {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}
+👮 Администратор: @{call.from_user.username or call.from_user.first_name}
 
 ⚠️ Ваша жалоба не соответствует критериям или содержит недостоверную информацию.
+
+📝 Ваш текст жалобы:
+{complaint_text[:500]}
 """
-        
-        try:
-            bot.send_message(user_id, decision_text)
-        except Exception as e:
-            print(f"Error notifying user: {e}")
     
+    try:
+        bot.send_message(user_id, decision_text)
+    except Exception as e:
+        print(f"Error notifying user: {e}")
+    
+    # Обновляем сообщение у администратора (но не удаляем его!)
     status_text = "ОДОБРЕНА ✅" if action == 'approve' else "ОТКЛОНЕНА ❌"
+    decision_date = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
+    
+    updated_text = f"""
+📋 ЖАЛОБА #{complaint_id} - {status_text}
+
+👤 От: {first_name} (@{username or 'нет'})
+📅 Дата подачи: {datetime.datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')}
+📅 Дата решения: {decision_date}
+👮 Решил: @{call.from_user.username or call.from_user.first_name}
+
+📝 Текст жалобы:
+{complaint_text}
+
+✅ Решение принято: {status_text}
+"""
+    
+    # Создаем кнопки для просмотра решения
+    markup = types.InlineKeyboardMarkup()
+    view_decision_btn = types.InlineKeyboardButton("👁️‍🗨️ ПРОСМОТР РЕШЕНИЯ", callback_data=f"view_decision_{complaint_id}")
+    markup.add(view_decision_btn)
+    
     bot.edit_message_text(
-        f"Жалоба #{complaint_id} {status_text}\n"
-        f"👮 Администратор: @{call.from_user.username or 'не указан'}",
+        updated_text,
         call.message.chat.id,
-        call.message.message_id
+        call.message.message_id,
+        reply_markup=markup
     )
     
     bot.answer_callback_query(call.id, f"✅ Решение принято: {status_text}")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('view_decision_'))
+def view_decision(call):
+    """Просмотр решения по жалобе"""
+    complaint_id = int(call.data.split('_')[2])
+    
+    cursor.execute('''
+    SELECT c.*, a.username as admin_username
+    FROM complaints c
+    LEFT JOIN complaints a ON c.admin_id = a.id
+    WHERE c.id = ?
+    ''', (complaint_id,))
+    
+    complaint = cursor.fetchone()
+    
+    if complaint:
+        # Формируем полную информацию о жалобе
+        status_icon = "⏳" if complaint[5] == 'pending' else "✅" if complaint[5] == 'approved' else "❌"
+        status_text = "ОЖИДАЕТ" if complaint[5] == 'pending' else "ОДОБРЕНА" if complaint[5] == 'approved' else "ОТКЛОНЕНА"
+        
+        info_text = f"""
+📋 ПОЛНАЯ ИНФОРМАЦИЯ О ЖАЛОБЕ #{complaint_id}
+
+{status_icon} Статус: {status_text}
+
+👤 Отправитель: {complaint[3]}
+📱 Username: @{complaint[2] or 'не указан'}
+🆔 User ID: {complaint[1]}
+
+📅 Дата подачи: {datetime.datetime.strptime(complaint[9], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')}
+"""
+        
+        if complaint[5] != 'pending':
+            info_text += f"""
+👮 Решил: @{complaint[7] or complaint[6]}
+📅 Дата решения: {datetime.datetime.strptime(complaint[8], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')}
+"""
+        
+        info_text += f"""
+📝 Текст жалобы:
+{complaint[4]}
+"""
+        
+        markup = types.InlineKeyboardMarkup()
+        back_btn = types.InlineKeyboardButton("🔙 НАЗАД", callback_data="back_to_admin")
+        markup.add(back_btn)
+        
+        bot.edit_message_text(info_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+
 @bot.callback_query_handler(func=lambda call: call.data == "my_complaints")
 def show_my_complaints(call):
-    """Показать жалобы пользователя"""
+    """Показать жалобы пользователя - все жалобы, даже обработанные"""
     cursor.execute('''
-    SELECT id, complaint_text, status, created_at 
+    SELECT id, complaint_text, status, created_at, decision_time, admin_username
     FROM complaints 
     WHERE user_id = ? 
     ORDER BY id DESC 
-    LIMIT 10
+    LIMIT 15
     ''', (call.from_user.id,))
     
     complaints = cursor.fetchall()
@@ -241,11 +349,22 @@ def show_my_complaints(call):
     if not complaints:
         text = "📭 У вас пока нет отправленных жалоб."
     else:
-        text = "📋 ВАШИ ПОСЛЕДНИЕ ЖАЛОБЫ:\n\n"
+        text = "📋 ВАШИ ЖАЛОБЫ:\n\n"
         for comp in complaints:
             status_icon = "⏳" if comp[2] == 'pending' else "✅" if comp[2] == 'approved' else "❌"
-            date_str = datetime.datetime.strptime(comp[3], '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y')
-            text += f"{status_icon} #{comp[0]} - {date_str}\n"
+            status_text = "ОЖИДАЕТ" if comp[2] == 'pending' else "ОДОБРЕНА" if comp[2] == 'approved' else "ОТКЛОНЕНА"
+            date_str = datetime.datetime.strptime(comp[3], '%Y-%m-%d %H:%M:%S').strftime('%d.%m')
+            
+            text += f"{status_icon} #{comp[0]} - {date_str} - {status_text}"
+            
+            if comp[4]:  # если есть дата решения
+                decision_date = datetime.datetime.strptime(comp[4], '%Y-%m-%d %H:%M:%S').strftime('%d.%m')
+                text += f" ({decision_date})"
+            
+            if comp[5]:  # если есть username админа
+                text += f" 👮 @{comp[5]}"
+            
+            text += "\n"
     
     back_markup = types.InlineKeyboardMarkup()
     back_btn = types.InlineKeyboardButton("🔙 НАЗАД", callback_data="back_to_main")
@@ -255,18 +374,25 @@ def show_my_complaints(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 def back_to_main(call):
-    """Возврат в главное меню"""
     start_command(call.message)
 
-# ===== КОМАНДЫ АДМИНИСТРАТОРА =====
+# ===== ПАНЕЛЬ АДМИНИСТРАТОРА =====
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel")
+def admin_panel_callback(call):
+    if is_admin(call.from_user.id):
+        show_admin_menu(call.message)
+    else:
+        bot.answer_callback_query(call.id, "⛔ У вас нет доступа!")
 
 @bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    """Панель администратора"""
-    if message.from_user.id != ADMIN_ID:
+def admin_command(message):
+    if is_admin(message.from_user.id):
+        show_admin_menu(message)
+    else:
         bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
-        return
-    
+
+def show_admin_menu(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     stats_btn = types.InlineKeyboardButton("📊 СТАТИСТИКА", callback_data="admin_stats")
     pending_btn = types.InlineKeyboardButton("⏳ ОЖИДАЮЩИЕ", callback_data="admin_pending")
@@ -277,8 +403,7 @@ def admin_panel(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
 def admin_stats(call):
-    """Статистика жалоб"""
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Нет доступа")
         return
     
@@ -301,6 +426,8 @@ def admin_stats(call):
 ⏳ Ожидают решения: {pending}
 ✅ Одобрено: {approved}
 ❌ Отклонено: {rejected}
+
+📈 Обработано: {approved + rejected} из {total}
 """
     
     back_markup = types.InlineKeyboardMarkup()
@@ -311,8 +438,7 @@ def admin_stats(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_pending")
 def admin_pending(call):
-    """Жалобы ожидающие решения"""
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Нет доступа")
         return
     
@@ -342,13 +468,13 @@ def admin_pending(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_all")
 def admin_all(call):
-    """Все жалобы"""
-    if call.from_user.id != ADMIN_ID:
+    """Показать все жалобы - включая обработанные"""
+    if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "⛔ Нет доступа")
         return
     
     cursor.execute('''
-    SELECT id, status, first_name, created_at 
+    SELECT id, status, first_name, created_at, decision_time, admin_username
     FROM complaints 
     ORDER BY id DESC 
     LIMIT 20
@@ -360,7 +486,17 @@ def admin_all(call):
     for comp in all_complaints:
         status_icon = "⏳" if comp[1] == 'pending' else "✅" if comp[1] == 'approved' else "❌"
         date_str = datetime.datetime.strptime(comp[3], '%Y-%m-%d %H:%M:%S').strftime('%d.%m')
-        text += f"{status_icon} #{comp[0]} - 👤 {comp[2]} - 📅 {date_str}\n"
+        
+        text += f"{status_icon} #{comp[0]} - 👤 {comp[2]} - 📅 {date_str}"
+        
+        if comp[4]:  # если есть дата решения
+            decision_date = datetime.datetime.strptime(comp[4], '%Y-%m-%d %H:%M:%S').strftime('%d.%m')
+            text += f" (решено: {decision_date})"
+        
+        if comp[5]:  # если есть админ
+            text += f" 👮 @{comp[5]}"
+        
+        text += "\n"
     
     back_markup = types.InlineKeyboardMarkup()
     back_btn = types.InlineKeyboardButton("🔙 НАЗАД", callback_data="back_to_admin")
@@ -370,15 +506,15 @@ def admin_all(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_admin")
 def back_to_admin(call):
-    """Возврат в панель администратора"""
-    if call.from_user.id == ADMIN_ID:
-        admin_panel(call.message)
+    if is_admin(call.from_user.id):
+        show_admin_menu(call.message)
 
 # ===== ЗАПУСК БОТА =====
 if __name__ == "__main__":
     print("=" * 50)
     print("🤖 БОТ ДЛЯ ПРИЕМА ЖАЛОБ ЗАПУЩЕН")
-    print(f"👮 АДМИНИСТРАТОР: {ADMIN_ID}")
+    print(f"👥 Администраторов: {len(ADMIN_IDS)}")
+    print(f"👮 ID администраторов: {ADMIN_IDS}")
     print("=" * 50)
     
     try:
