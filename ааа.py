@@ -5,7 +5,7 @@ from telebot import types
 import datetime
 
 # ===== НАСТРОЙКИ =====
-BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"  # Замените на токен от @BotFather
+BOT_TOKEN = "8463911717:AAGXqlEqfUYHfGeV4ZeE2SYI3WlewsiKJpo"  # Замените на токен от @BotFather
 
 # ===== СПИСОК АДМИНИСТРАТОРОВ =====
 ADMIN_IDS = [
@@ -521,3 +521,4 @@ if __name__ == "__main__":
         bot.polling(none_stop=True)
     except Exception as e:
         print(f"❌ Ошибка: {e}")
+
