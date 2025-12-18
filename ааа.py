@@ -11,9 +11,12 @@ BOT_TOKEN = "8523088853:AAHEHLFYK9T6AqHERXYlK5Qn7rmqajEvegQ"  # Замените
 # ===== СПИСОК АДМИНИСТРАТОРОВ =====
 ADMIN_IDS = [
     7200109509,  # ID первого админа
-    1232171882,
-    523416060, # ID второго админа
+    523416060,
+    1232171882,  # ID второго админа
 ]
+
+# ===== ХРАНЕНИЕ ID СООБЩЕНИЙ ЖАЛОБ У АДМИНОВ =====
+complaint_admin_messages = {}  # Формат: {complaint_id: {admin_id1: message_id1, admin_id2: message_id2}}
 
 # ===== АНТИСПАМ СИСТЕМА =====
 last_complaint_time = {}
@@ -129,13 +132,9 @@ def start_command(message):
     status_text = f"\n📊 Осталось жалоб сегодня: {remaining}/{SPAM_LIMIT}"
 
     text = f"""
-🔔 БОТ ДЛЯ ПРИЕМА ЗАЯВОК
+🔔 БОТ ДЛЯ ПРИЕМА ЖАЛОБ
 
-Здесь вы можете оставить жалобы и предложения по улучшению студенческой жизни.
-
-Ваши обращения будут рассмотрены студенческим активом и вынесены на рассмотрение администрации колледжа. 
-
-Мы гарантируем конфиденциальность:
+👇 Выберите действие:
 {status_text}
 """
 
@@ -291,7 +290,7 @@ def save_complaint(message):
 
 
 def send_complaint_to_admins(complaint_id, user, category, complaint_text):
-    """Отправляет жалобу всем администраторам"""
+    """Отправляет жалобу всем администраторам и сохраняет ID сообщений"""
     admin_text = f"""
 🚨 НОВАЯ ЖАЛОБА #{complaint_id}
 
@@ -311,12 +310,20 @@ def send_complaint_to_admins(complaint_id, user, category, complaint_text):
     respond_btn = types.InlineKeyboardButton("💬 ОТВЕТИТЬ", callback_data=f"respond_{complaint_id}")
     markup.add(approve_btn, reject_btn, respond_btn)
 
-    # Отправляем всем администраторам
+    # Инициализируем запись для этой жалобы
+    if complaint_id not in complaint_admin_messages:
+        complaint_admin_messages[complaint_id] = {}
+
+    # Отправляем всем администраторам и сохраняем ID сообщений
     for admin_id in ADMIN_IDS:
         try:
-            bot.send_message(admin_id, admin_text, reply_markup=markup)
+            msg = bot.send_message(admin_id, admin_text, reply_markup=markup)
+            complaint_admin_messages[complaint_id][admin_id] = msg.message_id
         except Exception as e:
             print(f"Error sending to admin {admin_id}: {e}")
+            # Если админ заблокировал бота, удаляем его из списка для этой жалобы
+            if complaint_id in complaint_admin_messages and admin_id in complaint_admin_messages[complaint_id]:
+                del complaint_admin_messages[complaint_id][admin_id]
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'reject_', 'respond_')))
@@ -339,7 +346,7 @@ def handle_admin_action(call):
 
 
 def handle_decision(call, complaint_id, action):
-    """Обработка решения (одобрить/отклонить) - СООБЩЕНИЕ НЕ ПРОПАДАЕТ У АДМИНОВ"""
+    """Обработка решения (одобрить/отклонить) - ОБНОВЛЯЕТ У ВСЕХ АДМИНОВ"""
     cursor.execute('''
     SELECT user_id, category, complaint_text, status, created_at, first_name
     FROM complaints WHERE id = ?
@@ -393,7 +400,7 @@ def handle_decision(call, complaint_id, action):
     except Exception as e:
         print(f"Error notifying user: {e}")
 
-    # ОБНОВЛЯЕМ СООБЩЕНИЕ У АДМИНА (НЕ УДАЛЯЕМ!)
+    # ОБНОВЛЯЕМ СООБЩЕНИЕ У ВСЕХ АДМИНОВ ОДНОВРЕМЕННО
     status_text = "ОДОБРЕНА ✅" if action == 'approve' else "ОТКЛОНЕНА ❌"
     created_date = datetime.datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
 
@@ -430,16 +437,21 @@ def handle_decision(call, complaint_id, action):
     view_btn = types.InlineKeyboardButton("👁️‍🗨️ ПРОСМОТР", callback_data=f"view_{complaint_id}")
     markup.add(view_btn)
 
-    # НЕ УДАЛЯЕМ сообщение, а редактируем его
-    try:
-        bot.edit_message_text(
-            updated_text,
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
-    except Exception as e:
-        print(f"Error editing message: {e}")
+    # ОБНОВЛЯЕМ У ВСЕХ АДМИНОВ, КОТОРЫМ БЫЛА ОТПРАВЛЕНА ЖАЛОБА
+    if complaint_id in complaint_admin_messages:
+        for admin_id, message_id in list(complaint_admin_messages[complaint_id].items()):
+            try:
+                bot.edit_message_text(
+                    updated_text,
+                    admin_id,
+                    message_id,
+                    reply_markup=markup
+                )
+            except Exception as e:
+                print(f"Error updating message for admin {admin_id}: {e}")
+                # Если сообщение не найдено (удалено админом), удаляем из списка
+                if complaint_id in complaint_admin_messages and admin_id in complaint_admin_messages[complaint_id]:
+                    del complaint_admin_messages[complaint_id][admin_id]
 
     bot.answer_callback_query(call.id, f"✅ Статус обновлен: {status_text}")
 
@@ -887,7 +899,7 @@ def status_command(message):
 # ===== ЗАПУСК =====
 if __name__ == "__main__":
     print("=" * 50)
-    print("🤖 БОТ ДЛЯ ЖАЛОБ - ОБРАЩЕНИЯ НЕ ПРОПАДАЮТ")
+    print("🤖 БОТ ДЛЯ ЖАЛОБ - СООБЩЕНИЯ СИНХРОНИЗИРОВАНЫ МЕЖДУ АДМИНАМИ")
     print(f"👥 Администраторов: {len(ADMIN_IDS)}")
     print(f"📊 Лимит жалоб: {SPAM_LIMIT} в {COOLDOWN_MINUTES} минут")
     print("=" * 50)
